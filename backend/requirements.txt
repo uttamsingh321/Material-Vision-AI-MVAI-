@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# MVAI backend - runtime dependencies (Phase 1)
+# ---------------------------------------------------------------------------
+# The application runs with ZERO external services by default (SQLite +
+# local filesystem + in-process queue). Point the DATABASE_URL / REDIS_URL
+# settings at PostgreSQL / Redis to switch to the clustered topology.
+# See docs/DECISIONS.md (ADR-002, ADR-003, ADR-004).
+
+# --- Web framework --------------------------------------------------------
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12          # multipart/form-data (Excel upload)
+websockets>=13.1                   # WebSocket transport for live progress
+
+# --- Configuration / validation ------------------------------------------
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+email-validator>=2.2.0
+
+# --- Persistence ----------------------------------------------------------
+SQLAlchemy>=2.0.36
+alembic>=1.14.0
+aiosqlite>=0.20.0                  # async SQLite driver (local default)
+# asyncpg>=0.30.0                  # async PostgreSQL driver -> install via
+                                   # requirements-postgres.txt for Docker/PG
+
+# --- Spreadsheet I/O ------------------------------------------------------
+openpyxl>=3.1.5
+
+# --- Security -------------------------------------------------------------
+PyJWT>=2.10.0                      # JWT access tokens
+bcrypt>=4.2.0                      # password hashing (no passlib dependency)
+
+# --- Observability --------------------------------------------------------
+structlog>=24.4.0
+
+# --- HTTP client (used by the Phase 2 search/download layer) --------------
+httpx>=0.28.0
