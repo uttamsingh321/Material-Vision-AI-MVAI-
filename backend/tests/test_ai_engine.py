@@ -10,7 +10,9 @@ from app.ai_engine import (
     SiblingPackageError,
     available_modules,
     brand_detector,
+    confidence_engine,
     description_parser,
+    duplicate_detector,
     load,
     material_classifier,
 )
@@ -47,7 +49,16 @@ def test_available_modules_lists_importable_stems() -> None:
 
     assert "brand_detector" in modules
     assert "material_classifier" in modules
+    assert "confidence_engine" in modules
+    assert "duplicate_detector" in modules
     assert "__init__" not in modules
+
+
+def test_typed_accessors_resolve_to_real_modules() -> None:
+    for accessor in (confidence_engine, duplicate_detector):
+        module = accessor()
+
+        assert module.__name__.startswith(f"{PACKAGE_ALIASES['ai-engine']}.")
 
 
 def test_unknown_package_is_rejected() -> None:

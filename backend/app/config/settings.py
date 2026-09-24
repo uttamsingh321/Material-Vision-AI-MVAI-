@@ -170,6 +170,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     #: Comma-separated provider ids resolved through the crawler registry.
     search_providers: str = "google,bing,manufacturer"
+    #: Providers allowed to actually run, comma-separated.  Everything else is
+    #: registered but inert.  Phase 1 ships with only the local mock source so
+    #: the whole application runs end-to-end with no external API.
+    enabled_providers: str = "mock"
     search_timeout_seconds: float = 20.0
     search_max_results_per_provider: int = 15
     search_user_agent: str = (
@@ -353,6 +357,14 @@ class Settings(BaseSettings):
     @property
     def search_provider_list(self) -> tuple[str, ...]:
         return tuple(provider.lower() for provider in _split_csv(self.search_providers))
+
+    @property
+    def enabled_provider_list(self) -> tuple[str, ...]:
+        """Providers permitted to run, lower-cased and de-duplicated.
+
+        Order is preserved (it is the consultation priority), repeats are not.
+        """
+        return tuple(dict.fromkeys(provider.lower() for provider in _split_csv(self.enabled_providers)))
 
     @property
     def manufacturer_domain_list(self) -> tuple[str, ...]:

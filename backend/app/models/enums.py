@@ -220,6 +220,45 @@ class ExportFormat(StrEnum):
     REPORT = "report"
 
 
+class ExportStatus(StrEnum):
+    """Lifecycle of one export file generation."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        """``True`` when the export will never be worked on again."""
+        return self in {ExportStatus.COMPLETED, ExportStatus.FAILED}
+
+
+class LogLevel(StrEnum):
+    """Severity of a persisted processing-log entry."""
+
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+    @property
+    def rank(self) -> int:
+        """Numeric severity, so a threshold check needs no mapping table."""
+        return LOG_LEVEL_RANKS[self]
+
+
+#: Ordered severity for :attr:`LogLevel.rank`.
+LOG_LEVEL_RANKS: dict[LogLevel, int] = {
+    LogLevel.DEBUG: 10,
+    LogLevel.INFO: 20,
+    LogLevel.WARNING: 30,
+    LogLevel.ERROR: 40,
+    LogLevel.CRITICAL: 50,
+}
+
+
 class AuditAction(StrEnum):
     """Security-relevant events written to ``audit_logs``."""
 

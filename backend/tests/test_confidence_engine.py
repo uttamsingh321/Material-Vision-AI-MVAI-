@@ -178,3 +178,129 @@ def test_min_signals_short_circuits_to_no_verdict(module) -> None:  # noqa: ANN0
     assert report.band is ConfidenceBand.NONE
     assert report.decision is Decision.REVIEW
     assert report.observed_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_signal_is_rejected_rather_than_ignored(engine, module) -> None:  # noqa: ANN001
+    with pytest.raises(module.UnknownSignalError, match="colour"):
+        engine.score(colour=0.5)  # type: ignore[call-arg]
+
+    with pytest.raises(module.UnknownSignalError, match="colour"):
+        engine.score_components({"colour": 0.5})
+
+    with pytest.raises(module.UnknownSignalError, match="colour"):
+        module.ConfidenceEngine(weights={"colour": 1.0})
+
+
+def test_scores_are_clamped_into_range(engine) -> None:  # noqa: ANN001
+    report = engine.score_components(
+        {"ocr": 5.0, "vision": -3.0, "brand": True, "model": False}
+    )
+
+    assert report.components["ocr"] == 1.0
+    assert report.components["vision"] == 0.0
+    assert report.components["brand"] == 1.0
+    assert report.components["model"] == 0.0
+
+
+@pytest.mark.parametrize("bad", ["high", float("nan"), float("inf"), object()])
+def test_non_finite_or_non_numeric_scores_are_refused(engine, bad) -> None:  # noqa: ANN001
+    with pytest.raises(ValueError):
+        engine.score(ocr=bad)  # type: ignore[arg-type]
+
+
+def test_inverted_thresholds_are_refused(module) -> None:  # noqa: ANN001
+    with pytest.raises(ValueError, match="must not exceed"):
+        module.ConfidenceEngine(
+            weights={"ocr": 1.0}, accept_threshold=0.4, review_threshold=0.9
+        )
+
+
+def test_coverage_gate_outside_unit_interval_is_refused(module) -> None:  # noqa: ANN001
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        module.ConfidenceEngine(weights={"ocr": 1.0}, min_auto_accept_coverage=1.5)
+
+
+def test_weights_are_normalised_on_construction(module) -> None:  # noqa: ANN001
+    engine = module.ConfidenceEngine(weights={"ocr": 3.0, "vision": 1.0})
+
+    assert sum(engine.weights.values()) == pytest.approx(1.0)
+    assert engine.weights["ocr"] == pytest.approx(0.75)
+
+
+def test_all_zero_weights_issue_no_verdict(module) -> None:  # noqa: ANN001
+    engine = module.ConfidenceEngine(weights={"ocr": 0.0, "vision": 0.0})
+    report = engine.score(ocr=1.0, vision=1.0)
+
+    assert report.band is ConfidenceBand.NONE
+    assert report.decision is Decision.REVIEW
+    assert report.coverage == 0.0
+    assert "no verdict issued" in report.explanation
+
+
+# ---------------------------------------------------------------------------
+# Persistence shape and shortcuts
+# ---------------------------------------------------------------------------
+
+
+def test_report_maps_onto_the_confidence_score_columns(engine) -> None:  # noqa: ANN001
+    report = engine.score(ocr=0.9, vision=0.8, brand=0.7, model=0.7, text=0.6)
+    fields = report.as_score_fields()
+
+    assert set(fields) == {
+        "overall",
+        "band",
+        "decision",
+        "weights",
+        "contributions",
+        "explanation",
+        "strategy",
+        "missing_signals",
+        "ocr_score",
+        "vision_score",
+        "brand_score",
+        "model_score",
+        "text_score",
+        "provider_score",
+    }
+    assert fields["ocr_score"] == 0.9
+    assert fields["provider_score"] is None
+    assert fields["band"] is report.band
+    assert fields["strategy"] == "weighted-v1"
+    assert fields["missing_signals"] == ["provider"]
+
+
+def test_contributions_explain_where_the_total_came_from(engine) -> None:  # noqa: ANN001
+    report = engine.score(ocr=1.0, vision=0.5)
+
+    assert set(report.contributions) == {"ocr", "vision"}
+    assert report.contributions["ocr"] == pytest.approx(engine.weights["ocr"])
+    assert report.contributions["vision"] == pytest.approx(
+        engine.weights["vision"] * 0.5
+    )
+    observed_weight = sum(engine.weights[name] for name in report.contributions)
+    assert sum(report.contributions.values()) / observed_weight == pytest.approx(
+        report.overall
+    )
+
+
+def test_explanation_is_a_readable_sentence(engine) -> None:  # noqa: ANN001
+    explanation = engine.score(ocr=0.9, vision=0.9, brand=0.9, text=0.9).explanation
+
+    assert "coverage" in explanation
+    assert "review" in explanation
+    assert "accept" in explanation
+
+
+def test_shortcut_helpers_score_with_current_settings(module) -> None:  # noqa: ANN001
+    settings = get_settings()
+    report = module.score_confidence(ocr=1.0, vision=1.0, brand=1.0, model=1.0)
+
+    assert isinstance(report, module.ConfidenceReport)
+    assert report.strategy == module.STRATEGY
+    assert report.weights == pytest.approx(settings.confidence_weights)
+    assert module.engine().accept_threshold == settings.confidence_accept_threshold

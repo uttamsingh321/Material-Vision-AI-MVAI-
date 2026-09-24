@@ -11,10 +11,14 @@ from __future__ import annotations
 from app.models.audit_log import AuditLog
 from app.models.confidence_score import ConfidenceScore
 from app.models.duplicate import Duplicate
+from app.models.export_history import ExportHistory
 from app.models.image import MaterialImage
+from app.models.image_library import ImageLibraryItem
 from app.models.manufacturer import Manufacturer
 from app.models.material import Material
 from app.models.processing_job import ProcessingJob
+from app.models.processing_log import ProcessingLog
+from app.models.provider_history import ProviderHistory
 from app.models.review_queue import ReviewQueueItem
 from app.models.search_result import SearchResult
 from app.models.user import User
@@ -23,10 +27,14 @@ __all__ = [
     "AuditLog",
     "ConfidenceScore",
     "Duplicate",
+    "ExportHistory",
+    "ImageLibraryItem",
     "Manufacturer",
     "Material",
     "MaterialImage",
     "ProcessingJob",
+    "ProcessingLog",
+    "ProviderHistory",
     "ReviewQueueItem",
     "SearchResult",
     "User",

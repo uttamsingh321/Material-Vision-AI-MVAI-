@@ -93,13 +93,13 @@ class ConfidenceReport:
 
     @property
     def observed_count(self) -> int:
-        """How many signals were observed."""
-        return len(self.components) - len(self.missing_signals)
+        """How many signals contributed to the score."""
+        return len(self.contributions)
 
     @property
     def has_evidence(self) -> bool:
         """``False`` only when nothing at all was observed."""
-        return self.observed_count > 0
+        return bool(self.contributions)
 
     @property
     def is_auto_accepted(self) -> bool:
@@ -207,10 +207,15 @@ class ConfidenceEngine:
         coerced: dict[str, float | None] = {
             name: _coerce(name, components.get(name)) for name in SIGNALS
         }
+        # A signal the engine holds no weight for is outside its remit: it is
+        # neither scored nor reported as missing.
+        known = tuple(name for name in SIGNALS if name in self.weights)
         present = {
-            name: value for name, value in coerced.items() if value is not None
+            name: coerced[name]
+            for name in known
+            if coerced.get(name) is not None
         }
-        missing = tuple(name for name in SIGNALS if name not in present)
+        missing = tuple(name for name in known if name not in present)
 
         total_weight = sum(self.weights.values())
         observed_weight = sum(self.weights.get(name, 0.0) for name in present)
@@ -232,12 +237,14 @@ class ConfidenceEngine:
                 missing_signals=missing,
                 coverage=coverage,
                 explanation=(
-                    f"Only {len(present)} of {len(SIGNALS)} signals observed "
+                    f"Only {len(present)} of {len(known)} signals observed "
                     f"(coverage {coverage:.0%}); no verdict issued, held for review."
                 ),
             )
 
-        overall = sum(contributions.values()) / observed_weight
+        # Rounded so a mean of identical inputs lands exactly on that input -
+        # otherwise 0.45 scores as 0.44999999999999996 and fails its own check.
+        overall = round(sum(contributions.values()) / observed_weight, 6)
         band = self._band(overall)
         decision = self._decision(overall)
 
@@ -259,7 +266,7 @@ class ConfidenceEngine:
             missing_signals=missing,
             coverage=coverage,
             explanation=self._explain(
-                overall, band, decision, len(present), coverage, capped
+                overall, band, decision, len(present), len(known), coverage, capped
             ),
         )
 
@@ -286,6 +293,7 @@ class ConfidenceEngine:
         band: ConfidenceBand,
         decision: Decision,
         observed: int,
+        known: int,
         coverage: float,
         capped: bool,
     ) -> str:
@@ -293,7 +301,7 @@ class ConfidenceEngine:
         if capped:
             return (
                 f"Overall {overall:.2f} ({band.value}) from {observed} of "
-                f"{len(SIGNALS)} signals, but coverage {coverage:.0%} is below the "
+                f"{known} signals, but coverage {coverage:.0%} is below the "
                 f"{self.min_auto_accept_coverage:.0%} needed to auto-accept; "
                 "held for human review."
             )
@@ -305,7 +313,7 @@ class ConfidenceEngine:
             action = "rejected"
         return (
             f"Overall {overall:.2f} ({band.value}) from {observed} of "
-            f"{len(SIGNALS)} signals, coverage {coverage:.0%}; {action} at "
+            f"{known} signals, coverage {coverage:.0%}; {action} at "
             f"thresholds review {self.review_threshold:.2f} / "
             f"accept {self.accept_threshold:.2f}."
         )

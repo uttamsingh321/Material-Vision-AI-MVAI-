@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -11,22 +13,30 @@ from app.models import (
     AuditLog,
     ConfidenceScore,
     Duplicate,
+    ExportHistory,
+    ImageLibraryItem,
     Manufacturer,
     Material,
     MaterialImage,
     ProcessingJob,
+    ProcessingLog,
+    ProviderHistory,
     ReviewQueueItem,
     SearchResult,
     User,
 )
 from app.models.enums import (
+    LOG_LEVEL_RANKS,
     AuditAction,
     ConfidenceBand,
     Decision,
     DuplicateMethod,
+    ExportFormat,
+    ExportStatus,
     ImageStatus,
     JobStatus,
     JobType,
+    LogLevel,
     MaterialStatus,
     ProviderKind,
     ReviewReason,
@@ -38,10 +48,14 @@ EXPECTED_TABLES = {
     "audit_logs",
     "confidence_scores",
     "duplicates",
+    "export_history",
+    "image_library",
     "images",
     "manufacturers",
     "materials",
     "processing_jobs",
+    "processing_logs",
+    "provider_history",
     "review_queue",
     "search_results",
     "users",
@@ -396,3 +410,162 @@ async def test_manufacturer_registry_fields(db_session) -> None:
     assert manufacturer.is_active is True
     assert manufacturer.priority == 10
     assert str(manufacturer) == "Schneider Electric"
+
+
+# ---------------------------------------------------------------------------
+# Wave 1: image library, provider history, processing logs, export history
+# ---------------------------------------------------------------------------
+
+
+async def test_image_library_item_defaults_and_path(db_session) -> None:
+    item = ImageLibraryItem(
+        category="Electrical",
+        library_path="Electrical/contactor.png",
+        filename="contactor.png",
+        sha256="a" * 64,
+        material_code="MC-1001",
+        description="Schneider LC1D18 contactor",
+    )
+    db_session.add(item)
+    await db_session.flush()
+
+    assert item.category == "Electrical"
+    assert item.material_id is None, "library rows outlive their batch"
+    assert item.image_id is None
+    assert str(item) == "<ImageLibraryItem Electrical/contactor.png>"
+
+
+async def test_image_library_category_is_queryable(db_session) -> None:
+    for category in ("Electrical", "Electrical", "Chemical"):
+        db_session.add(
+            ImageLibraryItem(category=category, library_path=f"{category}/x.png", filename="x.png")
+        )
+    await db_session.flush()
+
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(ImageLibraryItem)
+        .where(ImageLibraryItem.category == "Electrical")
+    )
+    assert count == 2
+
+
+async def test_provider_history_records_outcome(db_session) -> None:
+    history = ProviderHistory(
+        provider="mock",
+        provider_kind=ProviderKind.IMAGE_SEARCH,
+        query="schneider lc1d18",
+        outcome="ok",
+        result_count=15,
+        accepted_count=4,
+        latency_ms=120,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(history)
+    await db_session.flush()
+
+    assert history.failure_streak == 0
+    assert history.detail == {}
+    assert history.finished_at is None
+    assert str(history) == "<ProviderHistory mock ok>"
+
+
+async def test_provider_history_outcome_and_provider_are_indexed(db_session) -> None:
+    for outcome in ("ok", "error", "error"):
+        db_session.add(
+            ProviderHistory(
+                provider="bing_images",
+                outcome=outcome,
+                started_at=datetime.now(timezone.utc),
+            )
+        )
+    await db_session.flush()
+
+    errors = await db_session.scalar(
+        select(func.count())
+        .select_from(ProviderHistory)
+        .where(
+            ProviderHistory.outcome == "error",
+            ProviderHistory.provider == "bing_images",
+        )
+    )
+    assert errors == 2
+
+
+async def test_processing_log_persists_context(db_session) -> None:
+    log = ProcessingLog(
+        timestamp=datetime.now(timezone.utc),
+        level=LogLevel.WARNING,
+        logger="app.services.search_pipeline",
+        message="provider returned no results",
+        job_id=7,
+        batch_id="00000000-0000-0000-0000-000000000009",
+        provider="mock",
+        context={"query": "skf 6205", "attempt": 2},
+    )
+    db_session.add(log)
+    await db_session.flush()
+
+    assert log.level == LogLevel.WARNING
+    assert log.context["attempt"] == 2
+    assert str(log).startswith("<ProcessingLog warning")
+
+
+async def test_processing_log_level_filter(db_session) -> None:
+    for level in (LogLevel.DEBUG, LogLevel.INFO, LogLevel.ERROR):
+        db_session.add(
+            ProcessingLog(
+                timestamp=datetime.now(timezone.utc), level=level, message=f"{level} message"
+            )
+        )
+    await db_session.flush()
+
+    # Enum values are stored as strings, so severity comparison must go
+    # through LOG_LEVEL_RANKS rather than a lexicographic ``>=``.
+    levels = (await db_session.scalars(select(ProcessingLog))).all()
+    serious = [entry for entry in levels if entry.level.rank >= LogLevel.WARNING.rank]
+    assert len(serious) == 1
+    assert serious[0].level is LogLevel.ERROR
+
+
+async def test_export_history_lifecycle(db_session) -> None:
+    export = ExportHistory(
+        batch_id="00000000-0000-0000-0000-00000000000a",
+        filename="batch-export.xlsx",
+        storage_path="batch-export.xlsx",
+        format=ExportFormat.XLSX,
+        status=ExportStatus.PENDING,
+        row_count=5,
+    )
+    db_session.add(export)
+    await db_session.flush()
+
+    assert export.is_available is False
+    export.status = ExportStatus.COMPLETED
+    export.byte_size = 2048
+    await db_session.flush()
+    assert export.is_available is True
+
+
+async def test_export_history_failed_is_terminal_not_available(db_session) -> None:
+    export = ExportHistory(filename="broken.xlsx", status=ExportStatus.FAILED, error="disk full")
+    db_session.add(export)
+    await db_session.flush()
+
+    assert export.status.is_terminal is True
+    assert export.is_available is False
+    assert export.storage_path is None
+
+
+def test_log_level_rank_orders_severities() -> None:
+    assert LogLevel.CRITICAL.rank > LogLevel.ERROR.rank > LogLevel.WARNING.rank
+    assert LogLevel.INFO.rank > LogLevel.DEBUG.rank
+    assert LOG_LEVEL_RANKS[LogLevel.INFO] == 20
+
+
+def test_export_status_terminal_set() -> None:
+    assert ExportStatus.COMPLETED.is_terminal is True
+    assert ExportStatus.FAILED.is_terminal is True
+    assert ExportStatus.PENDING.is_terminal is False
+    assert ExportStatus.RUNNING.is_terminal is False
+
