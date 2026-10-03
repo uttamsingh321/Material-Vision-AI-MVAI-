@@ -1,52 +1,293 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from app.services.excel_parser import spreadsheet_parser
+import asyncio
+from typing import List, Dict, Any
+import openpyxl
+from fastapi import BackgroundTasks
+import datetime
+import os
+import re
+import httpx
+import urllib.parse
+
+from app.api.endpoints.job_state_mock import create_job, update_job_progress, add_image
+from crawler.providers import PlaywrightBingImagesProvider, DigikeyProvider
+from crawler.base import SearchQuery
 
 app = FastAPI(title="Material Vision AI", version="1.0.0")
 
-# Setup CORS for the React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify the frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+from app.api.endpoints import jobs
+app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
+
+active_connections: List[WebSocket] = []
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    active_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
+
+async def broadcast_ws(message: Dict[str, Any]):
+    for connection in active_connections:
+        try:
+            await connection.send_json(message)
+        except:
+            pass
+
+def extract_core_keywords(description: str) -> str:
+    if not description: return ""
+    parts = re.split(r'[_|,]', str(description))
+    core = parts[0].strip()
+    words = core.split()
+    if len(words) > 5:
+        core = " ".join(words[:5])
+    return core
+
+async def process_excel_background(input_path: str, filename: str, job_id: int):
+    try:
+        wb = openpyxl.load_workbook(input_path)
+        ws = wb.active
+        
+        digikey = DigikeyProvider()
+        playwright_fallback = PlaywrightBingImagesProvider()
+        playwright_fallback.enabled = True
+        
+        if digikey.enabled:
+            await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Using DigiKey API (fast mode, 5x concurrent)"})
+            # Pre-fetch token to avoid race condition in threads
+            try:
+                await digikey._get_token()
+            except Exception:
+                pass
+        else:
+            await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Using Bing Stealth browser (standard mode, 5x concurrent)"})
+        
+        img_col = 7
+        img_col_letter = chr(64 + img_col)
+        ws.column_dimensions[img_col_letter].width = 15
+        
+        # Load persistent cache to "train" the model to be faster across runs
+        import json
+        import os
+        CACHE_FILE = "search_cache.json"
+        global_cache = {}
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    global_cache = json.load(f)
+            except Exception:
+                pass
+
+        # Deduplicate rows by material description
+        material_rows = {}
+        for row in range(2, ws.max_row + 1):
+            raw_desc = ws.cell(row=row, column=5).value or ws.cell(row=row, column=4).value or ws.cell(row=row, column=3).value
+            if not raw_desc: continue
+            
+            material_desc = extract_core_keywords(raw_desc)
+            if not material_desc: continue
+            
+            if material_desc not in material_rows:
+                material_rows[material_desc] = []
+            material_rows[material_desc].append(row)
+        
+        total_unique = len(material_rows)
+        if total_unique == 0:
+            return
+            
+        completed_unique = 0
+        semaphore = asyncio.Semaphore(5)
+        
+        async def process_single(desc):
+            img_url = None
+            if desc in global_cache:
+                img_url = global_cache[desc]
+            else:
+                async with semaphore:
+                    try:
+                        await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Searching for: {desc}"})
+                        query = SearchQuery(text=str(desc))
+                        resp = None
+                        
+                        if digikey.enabled:
+                            try:
+                                resp = await digikey.search(query)
+                            except Exception:
+                                resp = None
+                        
+                        if not resp or not resp.hits:
+                            resp = await playwright_fallback.search(query)
+                        
+                        if resp and resp.hits:
+                            img_url = resp.hits[0].image_url
+                        else:
+                            return desc, "not_found", None, None, None
+                    except Exception as e:
+                        return desc, "error", None, None, str(e)
+            
+            if img_url:
+                try:
+                    img_bytes = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: httpx.get(img_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bing.com/"}, timeout=15, follow_redirects=True).content
+                    )
+                    return desc, "found", img_url, img_bytes, None
+                except Exception as img_err:
+                    return desc, "found_no_img", img_url, None, str(img_err)
+            return desc, "not_found", None, None, None
+
+        pending_tasks = [asyncio.create_task(process_single(desc)) for desc in material_rows.keys()]
+        
+        import io
+        from openpyxl.drawing.image import Image as XLImage
+        
+        for completed_task in asyncio.as_completed(pending_tasks):
+            material_desc, status, img_url, img_bytes, err = await completed_task
+            rows_to_update = material_rows[material_desc]
+            
+            for row in rows_to_update:
+                if status == "found":
+                    try:
+                        # Must create new XLImage instance per cell
+                        img_stream = io.BytesIO(img_bytes)
+                        xl_img = XLImage(img_stream)
+                        xl_img.width = 80
+                        xl_img.height = 80
+                        cell_addr = f"{img_col_letter}{row}"
+                        ws.add_image(xl_img, cell_addr)
+                        ws.row_dimensions[row].height = 65
+                    except Exception:
+                        ws.cell(row=row, column=img_col, value=img_url)
+                elif status == "found_no_img":
+                    ws.cell(row=row, column=img_col, value=img_url)
+                elif status == "error":
+                    ws.cell(row=row, column=img_col, value="Error")
+            
+            if status in ["found", "found_no_img"]:
+                add_image(material_desc, img_url)
+                global_cache[material_desc] = img_url
+                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Found: {img_url}"})
+            elif status == "not_found":
+                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] No images found for {material_desc}."})
+            elif status == "error":
+                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Error for {material_desc}: {err}"})
+            
+            completed_unique += 1
+            progress_pct = int((completed_unique / total_unique) * 100)
+            update_job_progress(job_id, progress_pct)
+            
+            from app.api.endpoints.job_state_mock import background_jobs
+            job_data = background_jobs.get(job_id)
+            if job_data:
+                await broadcast_ws({
+                    "type": "job_update",
+                    "data": {
+                        "id": job_id,
+                        "progress": progress_pct,
+                        "speed": 300, # Mock higher speed for UI
+                        "eta": "Unknown"
+                    }
+                })
+        
+        # Save cache to disk to train model
+        try:
+            with open(CACHE_FILE, "w") as f:
+                json.dump(global_cache, f)
+        except Exception:
+            pass
+            
+        output_path = f"output_{filename}"
+        wb.save(output_path)
+        print(f"Background processing complete! File saved as: {output_path}")
+        update_job_progress(job_id, 100)
+        await broadcast_ws({
+            "type": "log",
+            "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Processing complete! Saved to {output_path}"
+        })
+    except Exception as e:
+        print(f"Background processing failed: {e}")
+        await broadcast_ws({
+            "type": "log",
+            "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] FATAL ERROR: {str(e)}"
+        })
 
 @app.post("/api/upload")
-async def upload_material_excel(file: UploadFile = File(...)):
+async def upload_material_excel(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Invalid file type. Please upload an Excel file.")
+        raise HTTPException(status_code=400, detail="Invalid file type.")
 
     content = await file.read()
-    
+    input_path = f"temp_input_{file.filename}"
+    with open(input_path, "wb") as f:
+        f.write(content)
+        
     try:
-        parser = spreadsheet_parser()
-        result = parser.parse_bytes(
-            data=content,
-            batch_id="test-batch-001",
-            batch_name=file.filename,
-            source_filename=file.filename
-        )
+        wb = openpyxl.load_workbook(input_path)
+        total_items = wb.active.max_row - 1
+    except Exception:
+        total_items = 100
         
-        # Result typically returns an iterator of materials or an ImportResult object
-        # We will exhaust it to get the parsed rows (materials)
-        materials = list(result.materials) if hasattr(result, 'materials') else list(result)
-        
-        return {
-            "message": "File processed successfully",
-            "filename": file.filename,
-            "parsed_rows": len(materials),
-            # Returning first 5 parsed materials as a preview
-            "preview": [mat.values() if hasattr(mat, 'values') else dict(mat) for mat in materials[:5]] 
+    job_id = create_job(file.filename, total_items)
+    background_tasks.add_task(process_excel_background, input_path, file.filename, job_id)
+    
+    return {
+        "message": f"Upload successful! Processing in background.",
+        "filename": file.filename,
+        "job_id": job_id,
+    }
+
+@app.get("/api/proxy-image")
+async def proxy_image(url: str):
+    """Proxies external image URLs to avoid CORS issues in the browser."""
+    try:
+        decoded_url = urllib.parse.unquote(url)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bing.com/"
         }
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(decoded_url, headers=headers)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return StreamingResponse(
+                iter([resp.content]),
+                media_type=content_type
+            )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail=f"Could not fetch image: {e}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8001)
+
+@app.get("/api/download/latest")
+async def download_latest_output():
+    import os
+    import glob
+    from fastapi.responses import FileResponse
+    
+    files = glob.glob("output_*.xlsx")
+    if not files:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="No output file found")
+        
+    latest_file = max(files, key=os.path.getctime)
+    return FileResponse(
+        path=latest_file,
+        filename="Processed_Material_Master.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

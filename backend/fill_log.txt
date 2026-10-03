@@ -1,0 +1,42 @@
+﻿Loading workbook...
+python.exe : Traceback (most recent call last):
+At line:1 char:58
++ ... ] = 'utf8'; & "c:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI)\backend\fill_missing.py", line 84, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 205, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI)\backend\fill_missing.py", line 14, in main
+    wb = openpyxl.load_workbook(input_file)
+  File "C:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI)\.venv\Lib\site-packages\openpyxl\reader\excel.py", 
+line 348, in load_workbook
+    reader.read()
+    ~~~~~~~~~~~^^
+  File "C:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI)\.venv\Lib\site-packages\openpyxl\reader\excel.py", 
+line 289, in read
+    self.read_manifest()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\uttam.singh1\Desktop\Material Vision AI (MVAI)\.venv\Lib\site-packages\openpyxl\reader\excel.py", 
+line 134, in read_manifest
+    src = self.archive.read(ARC_CONTENT_TYPES)
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1690, in read
+    with self.open(name, "r", pwd) as fp:
+         ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1727, in open
+    zinfo = self.getinfo(name)
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1655, in getinfo
+    raise KeyError(
+        'There is no item named %r in the archive' % name)
+KeyError: "There is no item named '[Content_Types].xml' in the archive"

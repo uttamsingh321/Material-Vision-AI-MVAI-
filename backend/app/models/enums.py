@@ -122,13 +122,17 @@ class JobType(StrEnum):
 class JobStatus(StrEnum):
     """Job lifecycle.  ``QUEUED``/``RUNNING``/``PAUSED`` are resumable."""
 
+    PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
     PAUSED = "paused"
     SUCCEEDED = "succeeded"
+    COMPLETED = "completed"
     PARTIALLY_SUCCEEDED = "partially_succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RECOVERING = "recovering"
+    RETRYING = "retrying"
 
     @property
     def is_active(self) -> bool:
@@ -142,12 +146,12 @@ class JobStatus(StrEnum):
 
 
 JOB_ACTIVE_STATUSES: frozenset[JobStatus] = frozenset(
-    {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}
+    {JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED, JobStatus.RECOVERING, JobStatus.RETRYING}
 )
 
 #: Jobs found in these states at start-up are re-queued by the recovery sweep.
 JOB_RECOVERABLE_STATUSES: frozenset[JobStatus] = frozenset(
-    {JobStatus.RUNNING, JobStatus.PAUSED}
+    {JobStatus.RUNNING, JobStatus.PAUSED, JobStatus.RECOVERING, JobStatus.RETRYING}
 )
 
 

@@ -76,7 +76,8 @@ async def _database(_prepare_directories) -> AsyncIterator[None]:  # noqa: ANN00
 
 
 @pytest.fixture
-async def db_session() -> AsyncIterator["AsyncSession"]:  # noqa: F821
+async def db_session() -> AsyncIterator[Any]:  # fallback to Any to make pylance happy if needed, but let's just use the correct import:
+    from sqlalchemy.ext.asyncio import AsyncSession
     """A session whose work is rolled back, keeping tests independent."""
     from app.database.session import get_session_factory
 

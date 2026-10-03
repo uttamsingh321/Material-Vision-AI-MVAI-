@@ -145,6 +145,26 @@ def confidence_engine() -> ModuleType:
     return load("confidence_engine")
 
 
+def ocr_reader() -> ModuleType:
+    """``ai-engine/ocr_reader.py`` (interface only in Phase 1)."""
+    return load("ocr_reader")
+
+
+def image_similarity() -> ModuleType:
+    """``ai-engine/image_similarity.py`` (interface only in Phase 1)."""
+    return load("image_similarity")
+
+
+def vision_validator() -> ModuleType:
+    """``ai-engine/vision_validator.py`` (interface only in Phase 1)."""
+    return load("vision_validator")
+
+
+def background_remover() -> ModuleType:
+    """``ai-engine/background_remover.py`` (interface only in Phase 1)."""
+    return load("background_remover")
+
+
 def crawler(module_name: str) -> ModuleType:
     """Any module inside ``crawler/``, e.g. ``crawler("google_search")``."""
     return load(module_name, package="crawler")
@@ -161,12 +181,16 @@ __all__ = [
     "REPO_ROOT",
     "SiblingPackageError",
     "available_modules",
+    "background_remover",
     "brand_detector",
     "confidence_engine",
     "crawler",
     "description_parser",
     "duplicate_detector",
+    "image_similarity",
     "load",
     "material_classifier",
+    "ocr_reader",
     "verifier",
+    "vision_validator",
 ]
