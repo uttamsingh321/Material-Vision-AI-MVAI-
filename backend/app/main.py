@@ -13,7 +13,8 @@ import httpx
 import urllib.parse
 
 from app.api.endpoints.job_state_mock import create_job, update_job_progress, add_image
-from crawler.providers import PlaywrightBingImagesProvider, DigikeyProvider
+from crawler.providers import DigikeyProvider
+from crawler.multi_engine import MultiEngineImagesProvider
 from crawler.base import SearchQuery
 
 app = FastAPI(title="Material Vision AI", version="1.0.0")
@@ -63,7 +64,7 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
         ws = wb.active
         
         digikey = DigikeyProvider()
-        playwright_fallback = PlaywrightBingImagesProvider()
+        playwright_fallback = MultiEngineImagesProvider()
         playwright_fallback.enabled = True
         
         if digikey.enabled:
@@ -110,7 +111,7 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
             return
             
         completed_unique = 0
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(30)
         
         async def process_single(desc):
             img_url = None
@@ -143,7 +144,7 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
                 try:
                     img_bytes = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: httpx.get(img_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bing.com/"}, timeout=15, follow_redirects=True).content
+                        lambda: httpx.get(img_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bing.com/"}, timeout=8, follow_redirects=True).content
                     )
                     return desc, "found", img_url, img_bytes, None
                 except Exception as img_err:
@@ -171,11 +172,11 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
                         ws.add_image(xl_img, cell_addr)
                         ws.row_dimensions[row].height = 65
                     except Exception:
-                        ws.cell(row=row, column=img_col, value=img_url)
+                        pass
                 elif status == "found_no_img":
-                    ws.cell(row=row, column=img_col, value=img_url)
+                    pass
                 elif status == "error":
-                    ws.cell(row=row, column=img_col, value="Error")
+                    pass
             
             if status in ["found", "found_no_img"]:
                 add_image(material_desc, img_url)

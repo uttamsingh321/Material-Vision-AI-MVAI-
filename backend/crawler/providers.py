@@ -231,8 +231,9 @@ class PlaywrightBingImagesProvider(BaseSearchProvider):
             page = await browser.new_page()
             await Stealth().apply_stealth_async(page)
             
-            # Using exact original query format
-            search_query = urllib.parse.quote_plus(f"{query.text} industrial component")
+            # Using exact original query format + strict negative keywords for manufacturing rule
+            negative_keywords = "-person -people -human -worker -man -woman -face -stock"
+            search_query = urllib.parse.quote_plus(f"{query.text} industrial component {negative_keywords}")
             await page.goto(f"https://www.bing.com/images/search?q={search_query}")
             await page.wait_for_timeout(2000)
             
