@@ -198,18 +198,15 @@ class MultiEngineImagesProvider(BaseSearchProvider):
                 elif local_max > second_best_score:
                     second_best_score = local_max
 
-            print(f"[CLIP] '{item_text}' → best_score={best_score:.2f} idx={best_idx} margin={best_score - second_best_score:.2f}")
+            print(f"[CLIP] '{item_text}' -> best_score={best_score:.2f} idx={best_idx} margin={best_score - second_best_score:.2f}")
 
-            # Real product search is broader than exact string matching.  A USB drive,
-            # marker, or tape can be a valid hit even when the OCR text is noisy and the
-            # absolute CLIP score is not unusually high.  Accept clear category matches,
-            # but still reject weak or tied candidates.
-            if best_score >= 18.0 and (best_score - second_best_score) >= 0.25:
+            # 21.5 is a balanced strictness for the generic HuggingFace model.
+            if best_score >= 21.5:
                 return candidates[best_idx]
 
             print(
-                f"[CLIP] Candidate confidence is too weak or too close to competing matches: "
-                f"best={best_score:.2f}, second={second_best_score:.2f}. Rejecting all images."
+                f"[CLIP] Candidate confidence is too weak (needs 21.5+): "
+                f"best={best_score:.2f}. Rejecting all images."
             )
             return None
 
