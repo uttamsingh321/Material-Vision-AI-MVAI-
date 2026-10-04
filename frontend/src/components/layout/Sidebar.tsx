@@ -8,18 +8,12 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Upload', href: '/upload', icon: Upload },
   { name: 'Jobs', href: '/jobs', icon: List },
   { name: 'Processing', href: '/processing', icon: Activity },
   { name: 'Review Queue', href: '/review', icon: CheckSquare },
-  { name: 'Image Library', href: '/library', icon: ImageIcon },
-  { name: 'Reports', href: '/reports', icon: FileBarChart },
-  { name: 'Audit Logs', href: '/audit', icon: History },
+  { name: 'Image History', href: '/library', icon: ImageIcon },
   { name: 'Provider Status', href: '/providers', icon: Globe },
-  { name: 'Settings', href: '/settings', icon: Settings },
-  { name: 'Users', href: '/users', icon: Users },
-  { name: 'System Health', href: '/health', icon: HeartPulse },
 ];
 
 export default function Sidebar() {

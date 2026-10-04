@@ -38,12 +38,24 @@ def add_image(material_name: str, url: str):
         "url": url,
         "timestamp": datetime.datetime.now().isoformat()
     })
-    # Keep last 50 images to avoid memory bloat
-    if len(found_images) > 50:
-        found_images.pop()
+    # No limit on images, keep all history
+    pass
 
 def get_images():
     return found_images
+
+def update_image(old_name: str, new_name: str):
+    for img in found_images:
+        if img["name"] == old_name:
+            img["name"] = new_name
+            return True
+    return False
+
+def delete_image(name: str):
+    global found_images
+    original_len = len(found_images)
+    found_images = [img for img in found_images if img["name"] != name]
+    return len(found_images) < original_len
 
 def get_stats():
     jobs = list(background_jobs.values())

@@ -1,18 +1,15 @@
 import { useWebSocket } from '../contexts/WebSocketContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Activity, Clock, Cpu, Server } from 'lucide-react';
+import { Activity, Clock, Cpu, Server, ImageIcon, List } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export default function LiveProcessing() {
-  const { isConnected, lastMessage } = useWebSocket();
-  const [logs, setLogs] = useState<string[]>([]);
+  const { isConnected, lastMessage, foundCount, notFoundCount, logs } = useWebSocket();
   const [currentJob, setCurrentJob] = useState<any>(null);
 
   useEffect(() => {
     if (lastMessage) {
-      if (lastMessage.type === 'log') {
-        setLogs(prev => [...prev.slice(-49), lastMessage.data]);
-      } else if (lastMessage.type === 'job_update') {
+      if (lastMessage.type === 'job_update') {
         setCurrentJob(lastMessage.data);
       }
     }
@@ -42,7 +39,7 @@ export default function LiveProcessing() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Current Job</CardTitle>
@@ -50,6 +47,15 @@ export default function LiveProcessing() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{currentJob ? String(currentJob.id).substring(0,8) : 'None'}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Total Rows</CardTitle>
+            <List className="h-4 w-4 text-indigo-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{currentJob?.total_items || '0'}</div>
           </CardContent>
         </Card>
         <Card>
@@ -67,7 +73,7 @@ export default function LiveProcessing() {
             <Cpu className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{currentJob ? `${currentJob.speed} items/m` : '0 items/m'}</div>
+            <div className="text-2xl font-bold">{currentJob ? `${currentJob.speed} it/m` : '0 it/m'}</div>
           </CardContent>
         </Card>
         <Card>
@@ -77,6 +83,16 @@ export default function LiveProcessing() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{currentJob?.eta || 'N/A'}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Image Success</CardTitle>
+            <ImageIcon className="h-4 w-4 text-emerald-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">{foundCount}</div>
+            <p className="text-xs text-red-500">{notFoundCount} not found</p>
           </CardContent>
         </Card>
       </div>

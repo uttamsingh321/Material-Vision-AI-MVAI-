@@ -53,9 +53,12 @@ def extract_core_keywords(description: str) -> str:
     if not description: return ""
     parts = re.split(r'[_|,]', str(description))
     core = parts[0].strip()
+    # Strip garbage characters: question marks, garbage symbols, non-printable chars
+    core = re.sub(r'[?？！@#$%^&*=\[\]{}<>~`\\]+', '', core)
+    core = re.sub(r'\s+', ' ', core).strip()
     words = core.split()
-    if len(words) > 5:
-        core = " ".join(words[:5])
+    if len(words) > 6:
+        core = " ".join(words[:6])
     return core
 
 async def process_excel_background(input_path: str, filename: str, job_id: int):
@@ -113,15 +116,29 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
         completed_unique = 0
         semaphore = asyncio.Semaphore(30)
         
-        async def process_single(desc):
+        import os
+        import hashlib
+        CACHE_DIR = "image-cache"
+        if not os.path.exists(CACHE_DIR):
+            os.makedirs(CACHE_DIR)
+            
+        async def process_single(desc, retry_prefix=""):
             img_url = None
-            if desc in global_cache:
+            is_cached = False
+            lookup_key = desc if not retry_prefix else f"{retry_prefix}:{desc}"
+
+            if lookup_key in global_cache:
+                img_url = global_cache[lookup_key]
+                is_cached = True
+            elif desc in global_cache:
                 img_url = global_cache[desc]
+                is_cached = True
             else:
                 async with semaphore:
                     try:
-                        await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Searching for: {desc}"})
-                        query = SearchQuery(text=str(desc))
+                        search_text = f"{retry_prefix} {desc}".strip() if retry_prefix else desc
+                        await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {'↩ Retrying' if retry_prefix else 'Searching'}: {search_text}"})
+                        query = SearchQuery(text=str(search_text))
                         resp = None
                         
                         if digikey.enabled:
@@ -142,26 +159,42 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
             
             if img_url:
                 try:
-                    img_bytes = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: httpx.get(img_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bing.com/"}, timeout=8, follow_redirects=True).content
-                    )
+                    safe_name = hashlib.md5(img_url.encode('utf-8')).hexdigest() + ".jpg"
+                    cached_path = os.path.join(CACHE_DIR, safe_name)
+                    
+                    img_bytes = None
+                    if os.path.exists(cached_path):
+                        with open(cached_path, "rb") as f:
+                            img_bytes = f.read()
+                    else:
+                        img_bytes = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: httpx.get(img_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bing.com/"}, timeout=8, follow_redirects=True).content
+                        )
+                        with open(cached_path, "wb") as f:
+                            f.write(img_bytes)
+                            
+                    if is_cached:
+                        return desc, "found_cache", img_url, img_bytes, None
                     return desc, "found", img_url, img_bytes, None
                 except Exception as img_err:
                     return desc, "found_no_img", img_url, None, str(img_err)
             return desc, "not_found", None, None, None
 
+        # ---- PASS 1: Search all items ----
         pending_tasks = [asyncio.create_task(process_single(desc)) for desc in material_rows.keys()]
         
         import io
         from openpyxl.drawing.image import Image as XLImage
-        
+
+        not_found_items = []  # collect items to retry
+
         for completed_task in asyncio.as_completed(pending_tasks):
             material_desc, status, img_url, img_bytes, err = await completed_task
             rows_to_update = material_rows[material_desc]
             
             for row in rows_to_update:
-                if status == "found":
+                if status in ["found", "found_cache"]:
                     try:
                         # Must create new XLImage instance per cell
                         img_stream = io.BytesIO(img_bytes)
@@ -179,13 +212,14 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
                     pass
             
             if status in ["found", "found_no_img"]:
-                add_image(material_desc, img_url)
+                if status == "found":
+                    add_image(material_desc, img_url)
                 global_cache[material_desc] = img_url
                 await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Found: {img_url}"})
-            elif status == "not_found":
-                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] No images found for {material_desc}."})
-            elif status == "error":
-                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Error for {material_desc}: {err}"})
+            elif status == "found_cache":
+                await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Cached: Skipped {material_desc}"})
+            if status in ["not_found", "error"]:
+                not_found_items.append(material_desc)
             
             completed_unique += 1
             progress_pct = int((completed_unique / total_unique) * 100)
@@ -199,12 +233,46 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
                     "data": {
                         "id": job_id,
                         "progress": progress_pct,
-                        "speed": 300, # Mock higher speed for UI
-                        "eta": "Unknown"
+                        "speed": 300,
+                        "eta": "Unknown",
+                        "total_items": ws.max_row - 1
                     }
                 })
-        
-        # Save cache to disk to train model
+
+        # ---- PASS 2: Retry not-found items with alternative query prefixes ----
+        retry_strategies = ["product image of", "photo of", ""]
+        for retry_prefix in retry_strategies:
+            if not not_found_items:
+                break
+            await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ↩ Retrying {len(not_found_items)} items (prefix: '{retry_prefix}')..."})
+            retry_tasks = [asyncio.create_task(process_single(desc, retry_prefix)) for desc in not_found_items]
+            still_not_found = []
+            for completed_task in asyncio.as_completed(retry_tasks):
+                material_desc, status, img_url, img_bytes, err = await completed_task
+                rows_to_update = material_rows[material_desc]
+                if status in ["found", "found_cache"]:
+                    for row in rows_to_update:
+                        try:
+                            img_stream = io.BytesIO(img_bytes)
+                            xl_img = XLImage(img_stream)
+                            xl_img.width = 80
+                            xl_img.height = 80
+                            ws.add_image(xl_img, f"{img_col_letter}{row}")
+                            ws.row_dimensions[row].height = 65
+                        except Exception:
+                            pass
+                    if status == "found":
+                        add_image(material_desc, img_url)
+                    global_cache[material_desc] = img_url
+                    await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✓ Retry Found: {material_desc}"})
+                else:
+                    still_not_found.append(material_desc)
+            not_found_items = still_not_found
+
+        if not_found_items:
+            await broadcast_ws({"type": "log", "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ⚠ {len(not_found_items)} items had no images across all engines."})
+
+        # Save cache to disk
         try:
             with open(CACHE_FILE, "w") as f:
                 json.dump(global_cache, f)
@@ -214,6 +282,11 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
         output_path = f"output_{filename}"
         wb.save(output_path)
         print(f"Background processing complete! File saved as: {output_path}")
+        update_job_progress(job_id, 100)
+        await broadcast_ws({
+            "type": "log",
+            "data": f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ✅ Processing complete! Saved to {output_path}"
+        })
         update_job_progress(job_id, 100)
         await broadcast_ws({
             "type": "log",
@@ -256,6 +329,17 @@ async def proxy_image(url: str):
     """Proxies external image URLs to avoid CORS issues in the browser."""
     try:
         decoded_url = urllib.parse.unquote(url)
+        
+        # Try serving from local cache first!
+        import hashlib, os
+        safe_name = hashlib.md5(decoded_url.encode('utf-8')).hexdigest() + ".jpg"
+        cached_path = os.path.join("image-cache", safe_name)
+        
+        if os.path.exists(cached_path):
+            with open(cached_path, "rb") as f:
+                content = f.read()
+            return StreamingResponse(iter([content]), media_type="image/jpeg")
+            
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://www.bing.com/"

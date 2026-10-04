@@ -5,6 +5,9 @@ interface WebSocketContextType {
   isConnected: boolean;
   lastMessage: any;
   sendMessage: (msg: any) => void;
+  foundCount: number;
+  notFoundCount: number;
+  logs: string[];
 }
 
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined);
@@ -12,6 +15,9 @@ const WebSocketContext = createContext<WebSocketContextType | undefined>(undefin
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
+  const [foundCount, setFoundCount] = useState(0);
+  const [notFoundCount, setNotFoundCount] = useState(0);
+  const [logs, setLogs] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const { addNotification } = useNotification();
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -39,6 +45,16 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         try {
           const data = JSON.parse(event.data);
           setLastMessage(data);
+          
+          if (data.type === 'log') {
+            const logData = data.data;
+            setLogs(prev => [...prev.slice(-49), logData]);
+            if (logData.includes('] Found:') || logData.includes('] Cached:')) {
+              setFoundCount(c => c + 1);
+            } else if (logData.includes('] No images found') || logData.includes('] Error')) {
+              setNotFoundCount(c => c + 1);
+            }
+          }
         } catch (e) {
           console.error('Failed to parse WS message');
         }
@@ -75,7 +91,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   return (
-    <WebSocketContext.Provider value={{ isConnected, lastMessage, sendMessage }}>
+    <WebSocketContext.Provider value={{ isConnected, lastMessage, sendMessage, foundCount, notFoundCount, logs }}>
       {children}
     </WebSocketContext.Provider>
   );

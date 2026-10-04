@@ -37,3 +37,4 @@ structlog>=24.4.0
 
 # --- HTTP client (used by the Phase 2 search/download layer) --------------
 httpx>=0.28.0
+autocorrect==2.6.1
