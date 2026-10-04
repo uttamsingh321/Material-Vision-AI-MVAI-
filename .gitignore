@@ -55,3 +55,11 @@ image-library/**/*
 .idea/
 .DS_Store
 Thumbs.db
+
+# AI Engine files
+ai-engine/data/
+ai-engine/models/
+ai-engine/logs/
+
+backend/tests/*.zip
+backend/tests/archive/
