@@ -1,5 +1,5 @@
 # Start backend dev server
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd backend; python -m uvicorn app.main:app --reload --port 8000"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd backend; python -m uvicorn app.main:app --reload --port 8001"
 # Start frontend dev server  
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd frontend; npm run dev"
 Write-Host 'Backend: http://localhost:8000'
