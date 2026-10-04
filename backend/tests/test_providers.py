@@ -23,6 +23,7 @@ from app.services.provider_registry import (
 base = crawler("base")
 providers = crawler("providers")
 mock_provider = crawler("mock_provider")
+multi_engine = crawler("multi_engine")
 
 SearchQuery = base.SearchQuery
 ProviderDisabledError = base.ProviderDisabledError
@@ -199,6 +200,66 @@ async def test_mock_respects_smaller_max_results() -> None:
 
     assert len(response.hits) == 2
 
+
+def test_multi_engine_rejects_weak_or_tied_clip_matches(monkeypatch) -> None:
+    provider = multi_engine.MultiEngineImagesProvider()
+    candidates = [
+        {"url": "https://example.test/first.jpg", "bytes": b"first"},
+        {"url": "https://example.test/second.jpg", "bytes": b"second"},
+    ]
+
+    monkeypatch.setattr(multi_engine, "_load_clip", lambda: True)
+    monkeypatch.setattr(multi_engine, "_clip_processor", lambda **kwargs: kwargs)
+    monkeypatch.setattr(multi_engine, "_clip_model", FakeClipModel([[1.0, 3.0], [1.0, 3.0], [1.0, 3.0], [1.0, 3.0]]))
+
+    best = provider._sync_clip_score_and_pick(candidates, "bearing")
+
+    assert best is None
+
+
+def test_multi_engine_accepts_clear_clip_match(monkeypatch) -> None:
+    provider = multi_engine.MultiEngineImagesProvider()
+    candidates = [
+        {"url": "https://example.test/first.jpg", "bytes": b"first"},
+        {"url": "https://example.test/second.jpg", "bytes": b"second"},
+    ]
+
+    monkeypatch.setattr(multi_engine, "_load_clip", lambda: True)
+    monkeypatch.setattr(multi_engine, "_clip_processor", lambda **kwargs: kwargs)
+    monkeypatch.setattr(multi_engine, "_clip_model", FakeClipModel([[20.0, 30.0], [10.0, 12.0], [6.0, 9.0], [8.0, 11.0]]))
+
+    best = provider._sync_clip_score_and_pick(candidates, "bearing")
+
+    assert best is candidates[1]
+
+
+def test_multi_engine_accepts_broad_category_match(monkeypatch) -> None:
+    provider = multi_engine.MultiEngineImagesProvider()
+    candidates = [
+        {"url": "https://example.test/first.jpg", "bytes": b"first"},
+        {"url": "https://example.test/second.jpg", "bytes": b"second"},
+    ]
+
+    monkeypatch.setattr(multi_engine, "_load_clip", lambda: True)
+    monkeypatch.setattr(multi_engine, "_clip_processor", lambda **kwargs: kwargs)
+    monkeypatch.setattr(multi_engine, "_clip_model", FakeClipModel([[18.5, 18.1], [17.8, 17.9], [18.0, 17.6], [18.2, 17.8]]))
+
+    best = provider._sync_clip_score_and_pick(candidates, "pen drive")
+
+    assert best is candidates[0]
+
+
+class FakeClipModel:
+    def __init__(self, logits_sequence):
+        self.logits_sequence = list(logits_sequence)
+
+    def __call__(self, **kwargs):
+        logits = self.logits_sequence.pop(0)
+
+        class _Outputs:
+            logits_per_image = __import__("torch").tensor(logits)
+
+        return _Outputs()
 
 
 # ---------------------------------------------------------------------------

@@ -66,6 +66,7 @@ class DigikeyProvider(BaseSearchProvider):
     id = "digikey"
     kind = "distributor"
     display_name = "DigiKey"
+    enabled = False
 
     def __init__(self):
         super().__init__()
@@ -77,7 +78,9 @@ class DigikeyProvider(BaseSearchProvider):
             pass
         self.client_id = os.getenv("DIGIKEY_CLIENT_ID")
         self.client_secret = os.getenv("DIGIKEY_CLIENT_SECRET")
-        self.enabled = bool(self.client_id and self.client_secret)
+        # The registry is the single source of truth for runtime enablement.
+        # Planned providers ship disabled until the operator explicitly opts in.
+        self.enabled = False
         self._token = None
 
     async def _get_token(self) -> str:

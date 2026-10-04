@@ -114,7 +114,7 @@ async def process_excel_background(input_path: str, filename: str, job_id: int):
             return
             
         completed_unique = 0
-        semaphore = asyncio.Semaphore(30)
+        semaphore = asyncio.Semaphore(5)
         
         import os
         import hashlib

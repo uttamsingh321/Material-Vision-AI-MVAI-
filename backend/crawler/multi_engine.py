@@ -23,26 +23,39 @@ from .base import BaseSearchProvider, ProviderResponse, ProviderHit, SearchQuery
 # Global lazy-loaded CLIP model
 _clip_model = None
 _clip_processor = None
+import threading
+_clip_lock = threading.Lock()
 
 def _load_clip():
     global _clip_model, _clip_processor
     if _clip_model is not None:
         return True
-    try:
-        import torch
-        from transformers import CLIPProcessor, CLIPModel
-        model_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "../../../ai-engine/models/industrial-clip-ft")
-        )
-        if not os.path.exists(model_path):
-            model_path = "openai/clip-vit-base-patch32"
-        _clip_processor = CLIPProcessor.from_pretrained(model_path)
-        _clip_model = CLIPModel.from_pretrained(model_path)
-        _clip_model.eval()
-        return True
-    except Exception as e:
-        print(f"[CLIP] Failed to load: {e}")
-        return False
+    
+    with _clip_lock:
+        if _clip_model is not None:
+            return True
+        try:
+            print("[CLIP] Loading model into memory...")
+            import torch
+            from transformers import CLIPProcessor, CLIPModel
+            model_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "../../ai-engine/models/industrial-clip-ft")
+            )
+            if not os.path.exists(model_path):
+                print("================================================================")
+                print("[CLIP] Local fine-tuned model not found.")
+                print("[CLIP] FALLING BACK to downloading 1.5 GB model from HuggingFace!")
+                print("[CLIP] This may take 5-10 minutes and appear 'frozen'. Please wait...")
+                print("================================================================")
+                model_path = "openai/clip-vit-base-patch32"
+            _clip_processor = CLIPProcessor.from_pretrained(model_path)
+            _clip_model = CLIPModel.from_pretrained(model_path)
+            _clip_model.eval()
+            print("[CLIP] Model loaded successfully!")
+            return True
+        except Exception as e:
+            print(f"[CLIP] Failed to load: {e}")
+            return False
 
 
 class MultiEngineImagesProvider(BaseSearchProvider):
@@ -81,9 +94,10 @@ class MultiEngineImagesProvider(BaseSearchProvider):
                 f"https://www.google.com/search?tbm=isch&q={q}&num=15",
                 timeout=10
             )
-            # Google embeds image URLs in JS JSON blobs
+            # Google embeds image URLs in JS JSON blobs, but raw HTML has gstatic thumbnails
             urls = re.findall(r'"(https?://[^"]+\.(?:jpg|jpeg|png|webp))"', r.text)
-            return [u for u in urls if "gstatic" not in u][:10]
+            urls += re.findall(r'(https://encrypted-tbn0\.gstatic\.com/images\?[^"]+)', r.text)
+            return urls[:10]
         except Exception:
             return []
 
@@ -127,23 +141,21 @@ class MultiEngineImagesProvider(BaseSearchProvider):
         return [r for r in results if r is not None]
 
     # ------------------------------------------------------------------ #
-    # CLIP verification
+    # CLIP verification (runs in thread)
     # ------------------------------------------------------------------ #
 
-    def _clip_score_and_pick(self, candidates: list[dict], item_text: str) -> dict | None:
+    def _sync_clip_score_and_pick(self, candidates: list[dict], item_text: str) -> dict | None:
         """
         Score all candidate images against multiple prompts and
         return the best match if it passes the threshold.
         """
         if not _load_clip():
-            # CLIP unavailable – return first large image as fallback
             return candidates[0] if candidates else None
 
         try:
             import torch
             from PIL import Image as PILImage
 
-            # Multiple prompts – pick the one that gives the highest score
             prompts = [
                 f"{item_text}",
                 f"a photo of {item_text}",
@@ -160,6 +172,7 @@ class MultiEngineImagesProvider(BaseSearchProvider):
 
             best_score = -1.0
             best_idx = 0
+            second_best_score = -1.0
 
             for prompt in prompts:
                 inputs = _clip_processor(
@@ -179,22 +192,30 @@ class MultiEngineImagesProvider(BaseSearchProvider):
                 local_idx = logits.index(local_max)
 
                 if local_max > best_score:
+                    second_best_score = best_score
                     best_score = local_max
                     best_idx = local_idx
+                elif local_max > second_best_score:
+                    second_best_score = local_max
 
-            print(f"[CLIP] '{item_text}' → best_score={best_score:.2f} idx={best_idx}")
+            print(f"[CLIP] '{item_text}' → best_score={best_score:.2f} idx={best_idx} margin={best_score - second_best_score:.2f}")
 
-            # Threshold: 20.0 (permissive enough to capture industrial items)
-            if best_score >= 20.0:
+            # Real product search is broader than exact string matching.  A USB drive,
+            # marker, or tape can be a valid hit even when the OCR text is noisy and the
+            # absolute CLIP score is not unusually high.  Accept clear category matches,
+            # but still reject weak or tied candidates.
+            if best_score >= 18.0 and (best_score - second_best_score) >= 0.25:
                 return candidates[best_idx]
-            else:
-                # CLIP is too uncertain — accept first image anyway to avoid "not found"
-                print(f"[CLIP] Score {best_score:.2f} below threshold, accepting top image as fallback")
-                return candidates[0]
+
+            print(
+                f"[CLIP] Candidate confidence is too weak or too close to competing matches: "
+                f"best={best_score:.2f}, second={second_best_score:.2f}. Rejecting all images."
+            )
+            return None
 
         except Exception as e:
             print(f"[CLIP] Error during scoring: {e}")
-            return candidates[0] if candidates else None
+            return None
 
     async def _pinterest_urls(self, client: httpx.AsyncClient, q: str) -> list[str]:
         try:
@@ -238,17 +259,18 @@ class MultiEngineImagesProvider(BaseSearchProvider):
         q_broad    = urllib.parse.quote_plus(f"{corrected} {neg}")
 
         async with httpx.AsyncClient(headers=self.HEADERS, follow_redirects=True) as client:
-            # --- Parallel scrape Google + Pinterest only ---
-            google_urls, pinterest_urls = await asyncio.gather(
+            # --- Parallel scrape Google + Pinterest + Bing ---
+            google_urls, pinterest_urls, bing_urls = await asyncio.gather(
                 self._google_urls(client, q_specific),
                 self._pinterest_urls(client, q_specific),
+                self._bing_urls(client, q_specific),
                 return_exceptions=True,
             )
 
             # Merge unique URLs — Pinterest first (often cleaner product shots)
             seen = set()
             all_urls = []
-            for src in [pinterest_urls, google_urls]:
+            for src in [pinterest_urls, bing_urls, google_urls]:
                 if isinstance(src, list):
                     for u in src:
                         if u not in seen:
@@ -266,8 +288,8 @@ class MultiEngineImagesProvider(BaseSearchProvider):
         if not candidates:
             return ProviderResponse(provider=self.id, query=query, hits=tuple())
 
-        # --- CLIP-rank and pick the best ---
-        best = self._clip_score_and_pick(candidates, corrected)
+        # --- CLIP-rank and pick the best (offloaded to thread to avoid asyncio starvation) ---
+        best = await asyncio.to_thread(self._sync_clip_score_and_pick, candidates, corrected)
 
         if best:
             return ProviderResponse(
